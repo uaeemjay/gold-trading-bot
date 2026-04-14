@@ -145,3 +145,13 @@ class CapitalClient:
         result = self._request("DELETE", f"/api/v1/positions/{deal_id}")
         log.info(f"Close position result: {result}")
         return result
+
+    def get_price(self, epic):
+        """
+        Get the current bid/ask price for an instrument.
+        Returns the mid price (average of bid and ask).
+        """
+        data = self._request("GET", f"/api/v1/markets/{epic}")
+        bid  = data.get("snapshot", {}).get("bid", 0)
+        ask  = data.get("snapshot", {}).get("offer", 0)
+        return (bid + ask) / 2
