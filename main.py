@@ -94,16 +94,6 @@ def webhook():
 # SIGNAL HANDLERS
 # ══════════════════════════════════════════════════════════════
 
-def calc_pnl(direction, entry_price, exit_price, size):
-    """Calculate P&L and return a formatted string."""
-    if direction == "BUY":
-        pnl = (exit_price - entry_price) * size
-    else:
-        pnl = (entry_price - exit_price) * size
-    sign = "+" if pnl >= 0 else ""
-    return pnl, f"{sign}{pnl:.2f}"
-
-
 def handle_buy():
     """
     BUY signal logic:
@@ -112,24 +102,19 @@ def handle_buy():
     - If no positions → open new BUY
     """
     capital = get_capital()
-    positions     = capital.get_positions(EPIC)
+    positions      = capital.get_positions(EPIC)
     sell_positions = [p for p in positions if p["direction"] == "SELL"]
     buy_positions  = [p for p in positions if p["direction"] == "BUY"]
 
     # Close any opposite (SELL) positions first
     if sell_positions:
-        exit_price = capital.get_price(EPIC)
         log.info(f"BUY signal: closing {len(sell_positions)} SELL position(s) first")
-        pnl_lines = []
         for pos in sell_positions:
             capital.close_position(pos["dealId"])
-            _, pnl_str = calc_pnl("SELL", pos["level"], exit_price, pos["size"])
-            pnl_lines.append(f"  Entry: {pos['level']} | Exit: {exit_price:.2f} | P&L: {pnl_str}")
-            log.info(f"  Closed SELL deal {pos['dealId']} | P&L: {pnl_str}")
+            log.info(f"  Closed SELL deal {pos['dealId']}")
         send_telegram(
             f"🔄 <b>Reversed to BUY</b>\n"
-            f"Closed {len(sell_positions)} SELL position(s) on XAUUSD\n"
-            + "\n".join(pnl_lines)
+            f"Closed {len(sell_positions)} SELL position(s) on XAUUSD"
         )
 
     # Determine reason for Telegram message
@@ -141,14 +126,12 @@ def handle_buy():
         reason = "New BUY signal"
 
     # Open BUY trade
-    result = capital.open_position(EPIC, "BUY", TRADE_SIZE)
-    price  = result.get("level", "market price")
+    capital.open_position(EPIC, "BUY", TRADE_SIZE)
     log.info(f"Opened BUY {TRADE_SIZE} x {EPIC} | {reason}")
     send_telegram(
         f"📈 <b>BUY opened</b>\n"
         f"Instrument: XAUUSD\n"
         f"Quantity: {TRADE_SIZE}\n"
-        f"Price: {price}\n"
         f"Reason: {reason}"
     )
 
@@ -161,24 +144,19 @@ def handle_sell():
     - If no positions → open new SELL
     """
     capital = get_capital()
-    positions     = capital.get_positions(EPIC)
+    positions      = capital.get_positions(EPIC)
     buy_positions  = [p for p in positions if p["direction"] == "BUY"]
     sell_positions = [p for p in positions if p["direction"] == "SELL"]
 
     # Close any opposite (BUY) positions first
     if buy_positions:
-        exit_price = capital.get_price(EPIC)
         log.info(f"SELL signal: closing {len(buy_positions)} BUY position(s) first")
-        pnl_lines = []
         for pos in buy_positions:
             capital.close_position(pos["dealId"])
-            _, pnl_str = calc_pnl("BUY", pos["level"], exit_price, pos["size"])
-            pnl_lines.append(f"  Entry: {pos['level']} | Exit: {exit_price:.2f} | P&L: {pnl_str}")
-            log.info(f"  Closed BUY deal {pos['dealId']} | P&L: {pnl_str}")
+            log.info(f"  Closed BUY deal {pos['dealId']}")
         send_telegram(
             f"🔄 <b>Reversed to SELL</b>\n"
-            f"Closed {len(buy_positions)} BUY position(s) on XAUUSD\n"
-            + "\n".join(pnl_lines)
+            f"Closed {len(buy_positions)} BUY position(s) on XAUUSD"
         )
 
     # Determine reason
@@ -190,14 +168,12 @@ def handle_sell():
         reason = "New SELL signal"
 
     # Open SELL trade
-    result = capital.open_position(EPIC, "SELL", TRADE_SIZE)
-    price  = result.get("level", "market price")
+    capital.open_position(EPIC, "SELL", TRADE_SIZE)
     log.info(f"Opened SELL {TRADE_SIZE} x {EPIC} | {reason}")
     send_telegram(
         f"📉 <b>SELL opened</b>\n"
         f"Instrument: XAUUSD\n"
         f"Quantity: {TRADE_SIZE}\n"
-        f"Price: {price}\n"
         f"Reason: {reason}"
     )
 
@@ -213,23 +189,15 @@ def handle_tp():
         log.info("TP signal received — no open positions to close")
         return
 
-    exit_price = capital.get_price(EPIC)
     log.info(f"TP signal: closing all {len(positions)} open position(s)")
-    pnl_lines = []
-    total_pnl = 0
     for pos in positions:
         capital.close_position(pos["dealId"])
-        pnl, pnl_str = calc_pnl(pos["direction"], pos["level"], exit_price, pos["size"])
-        total_pnl += pnl
-        pnl_lines.append(f"  {pos['direction']} | Entry: {pos['level']} | Exit: {exit_price:.2f} | P&L: {pnl_str}")
-        log.info(f"  Closed {pos['direction']} deal {pos['dealId']} | P&L: {pnl_str}")
+        log.info(f"  Closed {pos['direction']} deal {pos['dealId']}")
 
-    total_sign = "+" if total_pnl >= 0 else ""
     send_telegram(
         f"🎯 <b>TP Hit — All positions closed</b>\n"
         f"Instrument: XAUUSD\n"
-        + "\n".join(pnl_lines) + "\n"
-        f"<b>Total P&L: {total_sign}{total_pnl:.2f}</b>\n"
+        f"Positions closed: {len(positions)}\n"
         f"⏳ Waiting for next signal..."
     )
 
