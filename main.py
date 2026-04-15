@@ -29,8 +29,8 @@ log = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # ── Settings ───────────────────────────────────────────────────
-EPIC       = "GOLD"    # XAUUSD instrument code on Capital.com
-TRADE_SIZE = 2         # Quantity per trade
+EPIC       = "GOLD"                                # XAUUSD instrument code on Capital.com
+TRADE_SIZE = int(os.getenv("TRADE_SIZE", "2"))    # Quantity per trade
 
 # ── Capital.com client ─────────────────────────────────────────
 def get_capital():
