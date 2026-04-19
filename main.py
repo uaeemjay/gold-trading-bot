@@ -30,7 +30,7 @@ app = Flask(__name__)
 
 # ── Settings ───────────────────────────────────────────────────
 EPIC       = "GOLD"                                # XAUUSD instrument code on Capital.com
-TRADE_SIZE = float(os.getenv("TRADE_SIZE", "5"))    # Quantity per trade
+TRADE_SIZE = float(os.getenv("TRADE_SIZE", "1"))    # Quantity per trade
 
 # ── Capital.com client ─────────────────────────────────────────
 def get_capital():
