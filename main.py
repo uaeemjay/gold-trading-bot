@@ -1,12 +1,3 @@
-New Message from Adarsh Kapoor  Show  Ignore
-
-Skip to content
-Using Gmail with screen readers
-Conversations
-18% of 2,048 GB used
-Terms · Privacy · Program Policies
-Last account activity: 20 minutes ago
-Details
 """
 Gold Trading Bot — Main webhook server
 Listens for TradingView alerts and places trades on Capital.com
@@ -233,5 +224,3 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info(f"Gold Trading Bot started on port {port}")
     app.run(host="0.0.0.0", port=port)
-updated code for MJ.txt
-Displaying updated code for MJ.txt.
