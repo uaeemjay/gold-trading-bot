@@ -1,3 +1,12 @@
+New Message from Adarsh Kapoor  Show  Ignore
+
+Skip to content
+Using Gmail with screen readers
+Conversations
+18% of 2,048 GB used
+Terms · Privacy · Program Policies
+Last account activity: 20 minutes ago
+Details
 """
 Gold Trading Bot — Main webhook server
 Listens for TradingView alerts and places trades on Capital.com
@@ -30,7 +39,7 @@ app = Flask(__name__)
 
 # ── Settings ───────────────────────────────────────────────────
 EPIC       = "GOLD"                                # XAUUSD instrument code on Capital.com
-TRADE_SIZE = float(os.getenv("TRADE_SIZE", "2"))    # Quantity per trade
+TRADE_SIZE = float(os.getenv("TRADE_SIZE", "1"))    # Quantity per trade
 
 # ── Capital.com client ─────────────────────────────────────────
 def get_capital():
@@ -224,3 +233,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info(f"Gold Trading Bot started on port {port}")
     app.run(host="0.0.0.0", port=port)
+updated code for MJ.txt
+Displaying updated code for MJ.txt.
