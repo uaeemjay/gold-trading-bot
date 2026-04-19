@@ -38,7 +38,7 @@ def get_capital():
         api_key    = os.getenv("CAPITAL_API_KEY"),
         password   = os.getenv("CAPITAL_PASSWORD"),
         account_id = os.getenv("CAPITAL_ACCOUNT_ID"),
-        env        = os.getenv("CAPITAL_ENV", "demo")
+        env        = os.getenv("CAPITAL_ENV", "live")
     )
 
 
