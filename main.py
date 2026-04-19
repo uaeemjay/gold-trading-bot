@@ -30,7 +30,7 @@ app = Flask(__name__)
 
 # ── Settings ───────────────────────────────────────────────────
 EPIC       = "GOLD"                                # XAUUSD instrument code on Capital.com
-TRADE_SIZE = float(os.getenv("TRADE_SIZE", "1"))    # Quantity per trade
+TRADE_SIZE = float(os.getenv("TRADE_SIZE", "2"))    # Quantity per trade
 
 # ── Capital.com client ─────────────────────────────────────────
 def get_capital():
@@ -180,27 +180,41 @@ def handle_sell():
 
 def handle_tp():
     """
-    TP signal: close ALL open positions immediately, then wait.
+    TP signal logic (netting account):
+    - Reads the live net position size each time — no state needed
+    - Opens an opposite trade for 70% of current size
+    - Capital.com nets it immediately, so the next TP naturally sees only the 30% remainder
+    - Whatever remains after all TPs closes on the next opposite direction signal
     """
-    capital = get_capital()
+    capital   = get_capital()
     positions = capital.get_positions(EPIC)
 
     if not positions:
         log.info("TP signal received — no open positions to close")
         return
 
-    log.info(f"TP signal: closing all {len(positions)} open position(s)")
-    for pos in positions:
-        capital.close_position(pos["dealId"])
-        log.info(f"  Closed {pos['direction']} deal {pos['dealId']}")
+    direction  = positions[0]["direction"]
+    opposite   = "SELL" if direction == "BUY" else "BUY"
+    current    = round(sum(float(p["size"]) for p in positions if p["direction"] == direction), 2)
+    close_size = round(current * 0.7, 2)
+
+    if close_size <= 0:
+        log.info("TP signal: position size too small to close")
+        return
+
+    remaining = round(current - close_size, 2)
+
+    log.info(f"TP: {direction} {current} → opening {opposite} {close_size}, {remaining} will remain")
+    capital.open_position(EPIC, opposite, close_size)
 
     send_telegram(
-        f"🎯 <b>TP Hit — All positions closed</b>\n"
+        f"🎯 <b>TP Hit — Partial Close (70%)</b>\n"
         f"Instrument: XAUUSD\n"
-        f"Positions closed: {len(positions)}\n"
-        f"⏳ Waiting for next signal..."
+        f"Position: {direction}\n"
+        f"Closed via {opposite}: {close_size} (70% of {current})\n"
+        f"Remaining: {remaining}\n"
+        f"⏳ Next TP closes another 70% of remaining, or wait for reversal"
     )
-
 
 # ══════════════════════════════════════════════════════════════
 # START
