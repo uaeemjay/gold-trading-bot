@@ -1,226 +1,170 @@
 """
-Gold Trading Bot — Main webhook server
-Listens for TradingView alerts and places trades on Capital.com
+Capital.com API client
+Handles authentication, opening/closing positions
 """
 
-import os
+import time
 import logging
-from datetime import datetime
-from flask import Flask, request, jsonify
-from dotenv import load_dotenv
-from capital import CapitalClient
-from telegram_notify import send_telegram
+import requests
 
-# ── Load environment variables from .env file ──────────────────
-load_dotenv()
-
-# ── Logging: writes to console AND a log file ──────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("bot.log")
-    ]
-)
 log = logging.getLogger(__name__)
 
-# ── Flask app (the web server that receives webhooks) ──────────
-app = Flask(__name__)
-
-# ── Settings ───────────────────────────────────────────────────
-EPIC       = "GOLD"                                # XAUUSD instrument code on Capital.com
-TRADE_SIZE = float(os.getenv("TRADE_SIZE", "1"))    # Quantity per trade
-
-# ── Capital.com client ─────────────────────────────────────────
-def get_capital():
-    return CapitalClient(
-        api_key    = os.getenv("CAPITAL_API_KEY"),
-        password   = os.getenv("CAPITAL_PASSWORD"),
-        account_id = os.getenv("CAPITAL_ACCOUNT_ID"),
-        env        = os.getenv("CAPITAL_ENV", "live")
-    )
+BASE_URLS = {
+    "demo": "https://demo-api-capital.backend-capital.com",
+    "live": "https://api-capital.backend-capital.com"
+}
 
 
-# ══════════════════════════════════════════════════════════════
-# ROUTES
-# ══════════════════════════════════════════════════════════════
+class CapitalClient:
+    def __init__(self, api_key, password, account_id, env="demo"):
+        self.api_key    = api_key
+        self.password   = password
+        self.account_id = account_id
+        self.base_url   = BASE_URLS.get(env, BASE_URLS["demo"])
+        self.cst            = None
+        self.security_token = None
+        self._authenticate()
 
-@app.route("/health", methods=["GET"])
-def health():
-    """Simple check to confirm the bot is alive."""
-    return jsonify({"status": "running", "time": datetime.now().isoformat()})
+    # ── Authentication ─────────────────────────────────────────
 
+    def _authenticate(self):
+        """
+        Log in to Capital.com and get session tokens.
+        These tokens (CST + X-SECURITY-TOKEN) are needed for every API call.
+        """
+        url     = f"{self.base_url}/api/v1/session"
+        headers = {
+            "X-CAP-API-KEY": self.api_key,
+            "Content-Type":  "application/json"
+        }
+        body = {
+            "identifier":        self.account_id,
+            "password":          self.password,
+            "encryptedPassword": False
+        }
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    """
-    TradingView sends alerts here.
-    Expected payloads:
-      {"action": "buy"}
-      {"action": "sell"}
-      {"action": "tp"}
-    """
-    data = request.get_json(silent=True)
+        resp = requests.post(url, json=body, headers=headers, timeout=10)
+        resp.raise_for_status()
 
-    if not data or "action" not in data:
-        log.warning(f"Invalid webhook payload received: {data}")
-        return jsonify({"error": "Invalid payload — expected {\"action\": \"buy/sell/tp\"}"}), 400
+        self.cst            = resp.headers.get("CST")
+        self.security_token = resp.headers.get("X-SECURITY-TOKEN")
+        log.info("Capital.com: session authenticated successfully")
 
-    action    = data["action"].lower().strip()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log.info(f"[{timestamp}] Webhook received: action={action}")
+    def _headers(self):
+        """Return the auth headers needed for every API call."""
+        return {
+            "CST":              self.cst,
+            "X-SECURITY-TOKEN": self.security_token,
+            "Content-Type":     "application/json"
+        }
 
-    try:
-        if action == "buy":
-            handle_buy()
-        elif action == "sell":
-            handle_sell()
-        elif action == "tp":
-            handle_tp()
-        else:
-            log.warning(f"Unknown action received: {action}")
-            return jsonify({"error": f"Unknown action: {action}"}), 400
+    # ── Core request method ────────────────────────────────────
 
-    except Exception as e:
-        log.error(f"Error handling '{action}' signal: {e}")
-        send_telegram(f"❌ <b>Bot Error</b>\nSignal: {action}\nError: {e}")
-        return jsonify({"error": str(e)}), 500
+    def _request(self, method, path, **kwargs):
+        """
+        Make an API call. If session expired (401), re-authenticate and try again.
+        If it fails, wait 2 seconds and retry once more.
+        """
+        url = f"{self.base_url}{path}"
 
-    return jsonify({"status": "ok", "action": action})
+        for attempt in range(2):
+            try:
+                resp = requests.request(
+                    method, url, headers=self._headers(), timeout=10, **kwargs
+                )
 
+                # Session expired — re-authenticate and retry
+                if resp.status_code == 401:
+                    log.info("Session expired — re-authenticating...")
+                    self._authenticate()
+                    resp = requests.request(
+                        method, url, headers=self._headers(), timeout=10, **kwargs
+                    )
 
-# ══════════════════════════════════════════════════════════════
-# SIGNAL HANDLERS
-# ══════════════════════════════════════════════════════════════
+                resp.raise_for_status()
+                return resp.json() if resp.content else {}
 
-def handle_buy():
-    """
-    BUY signal logic:
-    - If SELL positions open → close them all, then open BUY
-    - If BUY positions open → stack another BUY on top
-    - If no positions → open new BUY
-    """
-    capital = get_capital()
-    positions      = capital.get_positions(EPIC)
-    sell_positions = [p for p in positions if p["direction"] == "SELL"]
-    buy_positions  = [p for p in positions if p["direction"] == "BUY"]
+            except Exception as e:
+                if attempt == 0:
+                    log.warning(f"API call failed (attempt 1), retrying in 2s: {e}")
+                    time.sleep(2)
+                else:
+                    log.error(f"API call failed after retry: {e}")
+                    raise
 
-    # Close any opposite (SELL) positions first
-    if sell_positions:
-        log.info(f"BUY signal: closing {len(sell_positions)} SELL position(s) first")
-        for pos in sell_positions:
-            capital.close_position(pos["dealId"])
-            log.info(f"  Closed SELL deal {pos['dealId']}")
-        send_telegram(
-            f"🔄 <b>Reversed to BUY</b>\n"
-            f"Closed {len(sell_positions)} SELL position(s) on XAUUSD"
-        )
+    # ── Position methods ───────────────────────────────────────
 
-    # Determine reason for Telegram message
-    if buy_positions:
-        reason = f"Stacking — {len(buy_positions)} BUY already open"
-    elif sell_positions:
-        reason = "Signal reversed from SELL → BUY"
-    else:
-        reason = "New BUY signal"
+    def get_positions(self, epic=None):
+        """
+        Get all currently open positions.
+        If epic is provided (e.g. "GOLD"), only return positions for that instrument.
+        Returns a list of dicts with: dealId, direction, size, level, epic
+        """
+        data      = self._request("GET", "/api/v1/positions")
+        positions = []
 
-    # Open BUY trade
-    capital.open_position(EPIC, "BUY", TRADE_SIZE)
-    log.info(f"Opened BUY {TRADE_SIZE} x {EPIC} | {reason}")
-    send_telegram(
-        f"📈 <b>BUY opened</b>\n"
-        f"Instrument: XAUUSD\n"
-        f"Quantity: {TRADE_SIZE}\n"
-        f"Reason: {reason}"
-    )
+        for item in data.get("positions", []):
+            pos    = item.get("position", {})
+            market = item.get("market", {})
 
+            if epic is None or market.get("epic") == epic:
+                positions.append({
+                    "dealId":    pos.get("dealId"),
+                    "direction": pos.get("direction"),
+                    "size":      pos.get("size"),
+                    "level":     pos.get("level"),
+                    "epic":      market.get("epic")
+                })
 
-def handle_sell():
-    """
-    SELL signal logic:
-    - If BUY positions open → close them all, then open SELL
-    - If SELL positions open → stack another SELL on top
-    - If no positions → open new SELL
-    """
-    capital = get_capital()
-    positions      = capital.get_positions(EPIC)
-    buy_positions  = [p for p in positions if p["direction"] == "BUY"]
-    sell_positions = [p for p in positions if p["direction"] == "SELL"]
+        log.info(f"Open positions for {epic or 'all'}: {len(positions)}")
+        return positions
 
-    # Close any opposite (BUY) positions first
-    if buy_positions:
-        log.info(f"SELL signal: closing {len(buy_positions)} BUY position(s) first")
-        for pos in buy_positions:
-            capital.close_position(pos["dealId"])
-            log.info(f"  Closed BUY deal {pos['dealId']}")
-        send_telegram(
-            f"🔄 <b>Reversed to SELL</b>\n"
-            f"Closed {len(buy_positions)} BUY position(s) on XAUUSD"
-        )
+    def get_price(self, epic):
+        """Get current mid price for an instrument (average of bid and offer)."""
+        data     = self._request("GET", f"/api/v1/markets/{epic}")
+        snapshot = data.get("snapshot", {})
+        bid      = float(snapshot.get("bid", 0))
+        offer    = float(snapshot.get("offer", 0))
+        return (bid + offer) / 2
 
-    # Determine reason
-    if sell_positions:
-        reason = f"Stacking — {len(sell_positions)} SELL already open"
-    elif buy_positions:
-        reason = "Signal reversed from BUY → SELL"
-    else:
-        reason = "New SELL signal"
+    def open_position(self, epic, direction, size, stop_pct=None):
+        """
+        Open a new trade.
+        epic:      instrument code e.g. "GOLD"
+        direction: "BUY" or "SELL"
+        size:      quantity e.g. 2
+        stop_pct:  optional stop loss as a fraction e.g. 0.0017 for 0.17%
+        """
+        body = {
+            "epic":           epic,
+            "direction":      direction,
+            "size":           size,
+            "guaranteedStop": False
+        }
 
-    # Open SELL trade
-    capital.open_position(EPIC, "SELL", TRADE_SIZE)
-    log.info(f"Opened SELL {TRADE_SIZE} x {EPIC} | {reason}")
-    send_telegram(
-        f"📉 <b>SELL opened</b>\n"
-        f"Instrument: XAUUSD\n"
-        f"Quantity: {TRADE_SIZE}\n"
-        f"Reason: {reason}"
-    )
+        if stop_pct:
+            price         = self.get_price(epic)
+            stop_distance = round(price * stop_pct, 1)
+            body["stopDistance"] = stop_distance
+            log.info(f"Stop loss: {stop_pct*100:.2f}% of {price:.2f} = {stop_distance} points")
 
+        log.info(f"Opening {direction} {size} x {epic}")
+        result = self._request("POST", "/api/v1/positions", json=body)
+        log.info(f"Open position result: {result}")
+        return result
 
-def handle_tp():
-    """
-    TP signal logic (netting account):
-    - Reads the live net position size each time — no state needed
-    - Opens an opposite trade for 70% of current size
-    - Capital.com nets it immediately, so the next TP naturally sees only the 30% remainder
-    - Whatever remains after all TPs closes on the next opposite direction signal
-    """
-    capital   = get_capital()
-    positions = capital.get_positions(EPIC)
+    def remove_stop_loss(self, deal_id):
+        """Remove the stop loss from an existing open position."""
+        log.info(f"Removing stop loss from position {deal_id}")
+        result = self._request("PUT", f"/api/v1/positions/{deal_id}", json={"stopLevel": None})
+        log.info(f"Remove stop loss result: {result}")
+        return result
 
-    if not positions:
-        log.info("TP signal received — no open positions to close")
-        return
-
-    direction  = positions[0]["direction"]
-    opposite   = "SELL" if direction == "BUY" else "BUY"
-    current    = round(sum(float(p["size"]) for p in positions if p["direction"] == direction), 2)
-    close_size = round(current * 0.7, 2)
-
-    if close_size <= 0:
-        log.info("TP signal: position size too small to close")
-        return
-
-    remaining = round(current - close_size, 2)
-
-    log.info(f"TP: {direction} {current} → opening {opposite} {close_size}, {remaining} will remain")
-    capital.open_position(EPIC, opposite, close_size)
-
-    send_telegram(
-        f"🎯 <b>TP Hit — Partial Close (70%)</b>\n"
-        f"Instrument: XAUUSD\n"
-        f"Position: {direction}\n"
-        f"Closed via {opposite}: {close_size} (70% of {current})\n"
-        f"Remaining: {remaining}\n"
-        f"⏳ Next TP closes another 70% of remaining, or wait for reversal"
-    )
-
-# ══════════════════════════════════════════════════════════════
-# START
-# ══════════════════════════════════════════════════════════════
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    log.info(f"Gold Trading Bot started on port {port}")
-    app.run(host="0.0.0.0", port=port)
+    def close_position(self, deal_id):
+        """
+        Close a specific open position by its deal ID.
+        """
+        log.info(f"Closing position {deal_id}")
+        result = self._request("DELETE", f"/api/v1/positions/{deal_id}")
+        log.info(f"Close position result: {result}")
+        return result
