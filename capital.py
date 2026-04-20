@@ -119,22 +119,45 @@ class CapitalClient:
         log.info(f"Open positions for {epic or 'all'}: {len(positions)}")
         return positions
 
-    def open_position(self, epic, direction, size):
+    def get_price(self, epic):
+        """Get current mid price for an instrument (average of bid and offer)."""
+        data     = self._request("GET", f"/api/v1/markets/{epic}")
+        snapshot = data.get("snapshot", {})
+        bid      = float(snapshot.get("bid", 0))
+        offer    = float(snapshot.get("offer", 0))
+        return (bid + offer) / 2
+
+    def open_position(self, epic, direction, size, stop_pct=None):
         """
         Open a new trade.
         epic:      instrument code e.g. "GOLD"
         direction: "BUY" or "SELL"
         size:      quantity e.g. 2
+        stop_pct:  optional stop loss as a fraction e.g. 0.0017 for 0.17%
         """
         body = {
-            "epic":          epic,
-            "direction":     direction,
-            "size":          size,
+            "epic":           epic,
+            "direction":      direction,
+            "size":           size,
             "guaranteedStop": False
         }
+
+        if stop_pct:
+            price         = self.get_price(epic)
+            stop_distance = round(price * stop_pct, 1)
+            body["stopDistance"] = stop_distance
+            log.info(f"Stop loss: {stop_pct*100:.2f}% of {price:.2f} = {stop_distance} points")
+
         log.info(f"Opening {direction} {size} x {epic}")
         result = self._request("POST", "/api/v1/positions", json=body)
         log.info(f"Open position result: {result}")
+        return result
+
+    def remove_stop_loss(self, deal_id):
+        """Remove the stop loss from an existing open position."""
+        log.info(f"Removing stop loss from position {deal_id}")
+        result = self._request("PUT", f"/api/v1/positions/{deal_id}", json={"stopLevel": None})
+        log.info(f"Remove stop loss result: {result}")
         return result
 
     def close_position(self, deal_id):
